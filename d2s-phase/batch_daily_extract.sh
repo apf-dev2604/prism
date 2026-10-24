@@ -1,54 +1,69 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-SRC_PWD="1WsM06vocRC@"
+# INITIAL ENTRY POINT: load non-secret config.toml and shared .env only once.
+# All child Bash/Python handoffs inherit the exported environment.
+source "$HOME/scripts/prism/common/config/load_config.sh" || exit 1
 
-START_DATE="2024-11-04"
-END_DATE="2024-11-05"
+# The original manually entered dates remain available for backfills:
+# START_DATE="2024-11-04"
+# END_DATE="2024-11-05"
+WINDOW_FROM=$(date +%F)
+WINDOW_TO=$(date -d "tomorrow" +%F)
 
-CURRENT_DATE="$START_DATE"
+CURRENT_DATE="$WINDOW_FROM"
 
-while [[ "$CURRENT_DATE" < "$END_DATE" ]]; do
-       NEXT_DATE=$(date -d "$CURRENT_DATE +1 day" +"%Y-%m-%d")
+# Existing extractor script location (adjust only if the script was moved to d2s).
+EXTRACTOR_SCRIPT="$DIRECT2SILVER_PHASE/egms_gametx_inplayv1_mysql_extractor.py"
+# Use the Python interpreter from the user's existing virtual environment.
+PYTHON_BIN="$HOME/scripts/.venv/bin/python"
 
-       # Do not go beyond the actual END_DATE
-       if [[ "$NEXT_DATE" > "$END_DATE" ]]; then
-           NEXT_DATE="$END_DATE"
-       fi
-      
-       FROM_DATE="${CURRENT_DATE} 06:00:00"
-       TO_DATE="${NEXT_DATE} 06:00:00"  
+if [[ ! -x "$PYTHON_BIN" ]]; then
+    echo "[ERROR] Python virtual environment not found: $PYTHON_BIN" >&2
+    exit 1
+fi
+if [[ ! -f "$EXTRACTOR_SCRIPT" ]]; then
+    echo "[ERROR] Extractor script not found: $EXTRACTOR_SCRIPT" >&2
+    exit 1
+fi
 
-       echo "======================================================"
-       echo "Running daily batch"
-       echo "START_DATE : $START_DATE"
-       echo "END_DATE   : $END_DATE"
-       echo "TO         : $TO_DATE"
-       echo "======================================================"
+while [[ "$CURRENT_DATE" < "$WINDOW_TO" ]]; do
+    NEXT_DATE=$(date -d "$CURRENT_DATE +1 day" +"%Y-%m-%d")
 
-       #python upd_egms_games_txn_mysql_extract.py \
-       python egms_gametx_inplayv1_mysql_extractor.py \
-	    --table EGMS_Game_Trans \
-	    --pwd "$SRC_PWD" \
-	    --from "$FROM_DATE" \
-	    --to "$TO_DATE" \
-	    --date-column GameDate \
+    # Do not go beyond the actual WINDOW_TO
+    if [[ "$NEXT_DATE" > "$WINDOW_TO" ]]; then
+        NEXT_DATE="$WINDOW_TO"
+    fi
 
-       PYPROC=$?
+    FROM_DATE="${CURRENT_DATE} 06:00:00"
+    TO_DATE="${NEXT_DATE} 06:00:00"
 
-       if [ $PYPROC -ne 0 ] ; then
-	   echo "FAILED: $CURRENT_DATE"
-	   echo "Exit code: $PYPROC"
-	   echo $PYRROC
-       fi
+    echo "======================================================"
+    echo "Running daily batch"
+    echo "WINDOW_FROM : $WINDOW_FROM"
+    echo "WINDOW_TO   : $WINDOW_TO"
+    echo "FROM        : $FROM_DATE"
+    echo "TO          : $TO_DATE"
+    echo "======================================================"
 
-       echo "SUCCESS: $CURRENT_DATE"
-       echo 
+    "$PYTHON_BIN" "$EXTRACTOR_SCRIPT" \
+        --table "$DB_SETTINGS_INPLAY1_GAMETX_TABLENAME" \
+        --pwd "$INPLAYV1_SRC_PWD" \
+        --from "$FROM_DATE" \
+        --to "$TO_DATE" \
+        --date-column "$DB_SETTINGS_INPLAY1_GAMETX_BUSINESS_WINDOW_DATE"
 
-       CURRENT_DATE="$NEXT_DATE"
+    PYPROC=$?
+    if [[ "$PYPROC" -ne 0 ]]; then
+        echo "FAILED: $CURRENT_DATE" >&2
+        echo "Exit code: $PYPROC" >&2
+        exit "$PYPROC"
+    fi
 
+    echo "SUCCESS: $CURRENT_DATE"
+    echo
+    CURRENT_DATE="$NEXT_DATE"
 done
-
 
 echo "======================================================"
 echo "All daily batches completed successfully."
-#echo "======================================================"
+# echo "======================================================"
