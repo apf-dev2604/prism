@@ -1,0 +1,182 @@
+
+# ============================================================
+# PRISM - GLOBAL CONFIGURATION
+# Pipeline for Relational Ingestion and Storage Modernisation
+#
+# Non-secret configuration only.
+# Credentials are stored separately in common/.env.
+#
+# Required loader:
+#   common/config/load_config.sh
+#
+# Variable references such as $BASE_DIR are resolved
+# by load_config.sh, not by TOML itself.
+# ============================================================
+
+
+# ============================================================
+# 1. ROOT AND COMMON DIRECTORIES
+# ============================================================
+
+[COMMON_PATHS]
+
+BASE_DIR = "~/scripts/nexus_etl_prod"
+
+COMMON_DIR = "$BASE_DIR/common"
+SHARED_MODS = "$COMMON_DIR/shared_modules"
+CONF_DIR = "$COMMON_DIR/config"
+
+ETL_CONF_FILE = "$CONF_DIR/config.toml"
+ENV_FILE = "$COMMON_DIR/.env"
+
+
+# ============================================================
+# 2. PIPELINE DIRECTORIES
+# ============================================================
+
+[PIPELINE_DIR]
+
+DIRECT2SILVER_PHASE = "$BASE_DIR/d2s"
+GOLD_PHASE = "$BASE_DIR/gold_phase"
+
+BASE_LOG_DIR = "$DIRECT2SILVER_PHASE/logs"
+
+DMP_DIR = "$DIRECT2SILVER_PHASE/daily_dmp/jsonl"
+
+EXTRACT_LOG = "$BASE_LOG_DIR/extract_logs"
+EXTRACT_LOCK_FILE = "$BASE_LOG_DIR/extract_egms_gamestx.lock"
+
+
+# ============================================================
+# 3. GLOBAL DATABASE SETTINGS
+# ============================================================
+
+[DB_SETTINGS]
+
+DW_DB_HOST = "iest-db-postgresql.cvmg4ca8uhd2.ap-southeast-1.rds.amazonaws.com"
+DW_DB_PORT = 5432
+DW_DB_ENGINE = "PostgreSQL"
+
+PIPELINE_USER = "dbade_etl_user"
+
+
+# ============================================================
+# 4. SOURCE DATABASE - INPLAY V1 / MYSQL
+# ============================================================
+
+[DB_SETTINGS.INPLAY1]
+
+DB_ENGINE = "MySQL"
+
+DB_HOST = "103.253.145.33"
+DB_USER = "AllanFaylona"
+DB_PORT = 3306
+DB_NAME = "Artemis"
+
+GAMETX_TABLENAME = "EGMS_Game_Trans"
+GAMETX_BUSINESS_WINDOW_DATE = "GameDate"
+
+WALLETTX_TABLENAME_LIST = [
+    "withdrawalTx",
+    "depositTx"
+]
+
+ALL_TABLE_LIST = [
+    "EGMS_Game_Trans",
+    "withdrawalTx",
+    "depositTx"
+]
+
+
+# ============================================================
+# 5. DESTINATION - RAW DATA LAKE
+# ============================================================
+
+[DB_SETTINGS.DW_RAW_DB]
+
+DB_PORT = 5432
+DB_NAME = "iestdl"
+
+SCHEMA_NAME = "kemet"
+TABLE_NAME = "GameTransactionInplayV1_dmp"
+
+
+# ============================================================
+# 6. DESTINATION - NEXUS STAGING
+# ============================================================
+
+[DB_SETTINGS.STG_RAW_DB]
+
+DB_NAME = "iestdbrds"
+
+SCHEMA_NAME = "etl_stage"
+GAMESTX_TABLENAME = "gametransaction_prod"
+
+
+# ============================================================
+# 7. DESTINATION - NEXUS PRODUCTION
+# ============================================================
+
+[DB_SETTINGS.PRD_RAW_DB]
+
+DB_NAME = "iestdbrds"
+
+SCHEMA_NAME = "public"
+GAMESTX_TABLENAME = "gametransaction_prod"
+
+
+# ============================================================
+# 8. DATA QUALITY - AUDIT DATABASE AND TABLES
+# ============================================================
+
+[DB_SETTINGS.DQ]
+
+DB_NAME = "iestdbrds"
+DB_SCHEMA_NAME = "db_admin"
+
+DQ_TABLE_LIST = [
+    "etl_dq_run_summary",
+    "etl_source_window_checks",
+    "etl_strict_delivery_control",
+    "etl_dq_mismatch_detail",
+    "etl_dq_column_checks"
+]
+
+
+# ============================================================
+# 9. DATA QUALITY - COMPARISON POLICY
+# ============================================================
+
+# Store monetary tolerances as strings to preserve decimal
+# precision. Python should parse using decimal.Decimal.
+
+DQ_ROW_AMOUNT_TOLERANCE = "0.65"
+DQ_TOTAL_AMOUNT_TOLERANCE = "0.01"
+
+
+# ============================================================
+# 10. SMTP - NON-SECRET SETTINGS
+# ============================================================
+
+[SMTP]
+
+MIGRATION_REPORT_TO = "allan.faylona@iest.com.ph"
+
+SMTP_HOST = "smtp.gmail.com"
+SMTP_PORT = 587
+
+SMTP_USER = "dbadmin.824@gmail.com"
+SMTP_FROM = "no-reply-etlnexus@dedbadmin.com"
+
+
+# ============================================================
+# 11. SECRETS - STORED IN common/.env
+# ============================================================
+
+# INPLAYV1_SRC_PWD
+# DST_PWD
+# DQ_AUDIT_PG_PASSWORD
+# SMTP_PASSWORD
+#
+# Do not put passwords or authentication tokens here.
+
