@@ -8,27 +8,89 @@
 #   common/.env                - Passwords and credentials
 #
 # Requires:
-#   Bash 4+
-#   Mike Farah yq v4 (with TOML input support)
+#   Bash 4.3+
+#   Python 3.9+
+#   Mike Farah yq v4 (TOML input support)
 #
 # Usage:
-#   source "$HOME/scripts/nexus_etl_prod/common/config/load_config.sh"
+#   source "$HOME/scripts/prism/common/config/load_config.sh"
 #
 # All configuration variables are exported to child processes.
 # ==============================================================
 
+_prism_resolve_value() {
+
+    local result="$1"
+    local token variable replacement
+    local iteration=0
+
+    # Expand ~/ using the current user's home directory.
+    if [[ "$result" == "~/"* ]]; then
+        result="$HOME/${result:2}"
+    fi
+
+    # Resolve $NAME and ${NAME} references.
+    while [[ "$result" == *'$'* ]]; do
+
+        ((iteration += 1))
+
+        if (( iteration > 20 )); then
+            echo "[PRISM CONFIG][ERROR] Too many variable expansions" >&2
+            return 1
+        fi
+
+        if [[ "$result" =~ \$\{([a-zA-Z_][a-zA-Z0-9_]*)\} ]]; then
+
+            token="${BASH_REMATCH[0]}"
+            variable="${BASH_REMATCH[1]}"
+
+        elif [[ "$result" =~ \$([a-zA-Z_][a-zA-Z0-9_]*) ]]; then
+
+            token="${BASH_REMATCH[0]}"
+            variable="${BASH_REMATCH[1]}"
+
+        else
+            echo "[PRISM CONFIG][ERROR] Unsupported reference: $result" >&2
+            return 1
+        fi
+
+        if [[ ! -v $variable ]]; then
+            echo "[PRISM CONFIG][ERROR] Undefined variable: $variable" >&2
+            return 1
+        fi
+
+        replacement="${!variable}"
+
+        result="${result//"$token"/"$replacement"}"
+    done
+
+    printf '%s' "$result"
+}
+
+
 _prism_load_config() {
 
     local config_dir config_file env_file
-    local key value resolved token name
-    local line current
+    local python_bin tmp_file
+    local key value resolved
+    local previous_allexport=0
 
-    config_dir="$HOME/scripts/prism/common/config"
+    # ----------------------------------------------------------
+    # 1. Locate configuration files
+    #
+    # Use the loader's own location so the project can move
+    # to another Linux user's home directory.
+    # ----------------------------------------------------------
+
+    config_dir="$(
+        cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P
+    )" || return 1
+
     config_file="$config_dir/config.toml"
     env_file="$config_dir/../.env"
 
     # ----------------------------------------------------------
-    # 1. Check prerequisites
+    # 2. Check prerequisites
     # ----------------------------------------------------------
 
     if ! command -v yq >/dev/null 2>&1; then
@@ -36,132 +98,197 @@ _prism_load_config() {
         return 1
     fi
 
-    if [[ ! -f "$config_file" ]]; then
-        echo "[PRISM CONFIG][ERROR] Missing: $config_file" >&2
+    if command -v python3.9 >/dev/null 2>&1; then
+        python_bin="$(command -v python3.9)"
+    elif command -v python3 >/dev/null 2>&1; then
+        python_bin="$(command -v python3)"
+    else
+        echo "[PRISM CONFIG][ERROR] Python 3 is not installed" >&2
         return 1
     fi
 
-    if [[ ! -f "$env_file" ]]; then
-        echo "[PRISM CONFIG][ERROR] Missing: $env_file" >&2
+    if [[ ! -r "$config_file" ]]; then
+        echo "[PRISM CONFIG][ERROR] Missing or unreadable: $config_file" >&2
+        return 1
+    fi
+
+    if [[ ! -r "$env_file" ]]; then
+        echo "[PRISM CONFIG][ERROR] Missing or unreadable: $env_file" >&2
         return 1
     fi
 
     # ----------------------------------------------------------
-    # 2. Resolve references such as:
-    #      $BASE_DIR/common
-    #      ${BASE_LOG_DIR}/extract_logs
-    #      ~/scripts/nexus_etl_prod
+    # 3. Parse TOML and flatten configuration names
     #
-    # References must point to previously exported variables.
+    # Unprefixed:
+    #   COMMON_PATHS.BASE_DIR -> BASE_DIR
+    #   PIPELINE_DIR.DMP_DIR  -> DMP_DIR
+    #   SMTP.SMTP_HOST        -> SMTP_HOST
+    #
+    # Prefixed:
+    #   DB_SETTINGS.INPLAY1.DB_HOST
+    #       -> DB_SETTINGS_INPLAY1_DB_HOST
+    #
+    #   COMMON_ETL_SETTINGS.FETCH_SIZE
+    #       -> COMMON_ETL_SETTINGS_FETCH_SIZE
+    #
+    # String arrays become comma-separated values.
+    # Booleans become "true" or "false".
+    #
+    # Output uses NUL delimiters to preserve spacing.
     # ----------------------------------------------------------
 
-    _prism_resolve_value() {
+    tmp_file="$(mktemp)" || return 1
 
-        local result="$1"
-        local variable replacement
-        local iteration=0
+    if ! "$python_bin" - "$config_file" "$tmp_file" <<'PY'
+import json
+import re
+import subprocess
+import sys
 
-        # Expand ~/ using the current user's home directory.
-        if [[ "$result" == "~/"* ]]; then
-            result="$HOME/${result:2}"
-        fi
+config_file = sys.argv[1]
+output_file = sys.argv[2]
 
-        # Resolve supported $NAME and ${NAME} references.
-        while [[ "$result" == *'$'* ]]; do
+result = subprocess.run(
+    ["yq", "-p=toml", "-o=json", ".", config_file],
+    capture_output=True,
+    text=True
+)
 
-            ((iteration += 1))
+if result.returncode != 0:
+    raise RuntimeError(
+        "TOML parsing failed: " + result.stderr.strip()
+    )
 
-            if (( iteration > 20 )); then
-                echo "[PRISM CONFIG][ERROR] Too many variable expansions" >&2
-                return 1
-            fi
+config = json.loads(result.stdout)
 
-            if [[ "$result" =~ \$\{([a-zA-Z_][a-zA-Z0-9_]*)\} ]]; then
+UNPREFIXED_SECTIONS = {
+    "COMMON_PATHS",
+    "PIPELINE_DIR",
+    "SMTP",
+}
 
-                token="${BASH_REMATCH[0]}"
-                variable="${BASH_REMATCH[1]}"
+entries = []
+seen = set()
 
-            elif [[ "$result" =~ \$([a-zA-Z_][a-zA-Z0-9_]*) ]]; then
+def walk(parts, value):
+    if isinstance(value, dict):
+        for key, child in value.items():
+            walk(parts + [key], child)
+        return
 
-                token="${BASH_REMATCH[0]}"
-                variable="${BASH_REMATCH[1]}"
+    if parts[0] in UNPREFIXED_SECTIONS:
+        name_parts = parts[1:]
+    else:
+        name_parts = parts
 
-            else
-                echo "[PRISM CONFIG][ERROR] Unsupported variable reference: $result" >&2
-                return 1
-            fi
+    name = "_".join(name_parts)
 
-            if [[ ! -v "$variable" ]]; then
-                echo "[PRISM CONFIG][ERROR] Undefined variable: $variable" >&2
-                return 1
-            fi
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+        raise ValueError("Invalid variable name: " + name)
 
-            replacement="${!variable}"
+    if name in seen:
+        raise ValueError("Duplicate exported variable: " + name)
 
-            result="${result//$token/$replacement}"
-        done
+    seen.add(name)
 
-        printf '%s' "$result"
-    }
+    if isinstance(value, bool):
+        text = "true" if value else "false"
 
-    # ----------------------------------------------------------
-    # 3. Read TOML using yq and export configuration
-    #
-    # Example:
-    #   [DB_SETTINGS.INPLAY1]
-    #   GAMETX_TABLENAME = "EGMS_Game_Trans"
-    #
-    # Becomes:
-    #   DB_SETTINGS_INPLAY1_GAMETX_TABLENAME
-    # ----------------------------------------------------------
+    elif isinstance(value, list):
+        if not all(isinstance(x, str) for x in value):
+            raise ValueError(
+                "Only arrays of strings are supported: " + name
+            )
+        if any("," in x for x in value):
+            raise ValueError(
+                "Array item contains delimiter comma: " + name
+            )
+        text = ",".join(value)
 
-    local -a entries=()
+    elif isinstance(value, (str, int, float)):
+        text = str(value)
 
-    if ! mapfile -t entries < <(
-        yq -p=toml -o=json '.' "$config_file" |
-        yq -p=json -o=tsv \
-            '.. | select(kind == "scalar") |
-             [path | join("_"), .] | @tsv' -
-    ); then
-        echo "[PRISM CONFIG][ERROR] Failed to read TOML" >&2
+    else:
+        raise ValueError(
+            "Unsupported TOML value for " + name
+        )
+
+    if "\x00" in text or "\n" in text:
+        raise ValueError(
+            "Multiline or NUL value not supported: " + name
+        )
+
+    entries.append((name, text))
+
+for section, values in config.items():
+    walk([section], values)
+
+with open(output_file, "wb") as out:
+    for name, value in entries:
+        out.write(name.encode("utf-8") + b"\0")
+        out.write(value.encode("utf-8") + b"\0")
+PY
+    then
+        echo "[PRISM CONFIG][ERROR] Unable to parse config.toml" >&2
+        rm -f -- "$tmp_file"
         return 1
     fi
 
-    for line in "${entries[@]}"; do
+    # ----------------------------------------------------------
+    # 4. Resolve references and export TOML variables
+    # ----------------------------------------------------------
 
-        key="${line%%$'\t'*}"
-        value="${line#*$'\t'}"
+    while IFS= read -r -d '' key &&
+          IFS= read -r -d '' value; do
 
         if [[ ! "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
             echo "[PRISM CONFIG][ERROR] Invalid variable: $key" >&2
+            rm -f -- "$tmp_file"
             return 1
         fi
 
         if ! resolved="$(_prism_resolve_value "$value")"; then
+            rm -f -- "$tmp_file"
             return 1
         fi
 
         printf -v "$key" '%s' "$resolved"
         export "$key"
 
-    done
+    done < "$tmp_file"
+
+    rm -f -- "$tmp_file"
 
     # ----------------------------------------------------------
-    # 4. Load secret variables from .env
+    # 5. Load secret variables from .env
+    #
+    # .env must contain trusted Bash-compatible assignments.
+    # Preserve the caller's existing export-all setting.
     # ----------------------------------------------------------
+
+    if [[ $- == *a* ]]; then
+        previous_allexport=1
+    fi
 
     set -a
 
     if ! source "$env_file"; then
-        set +a
+
+        if (( ! previous_allexport )); then
+            set +a
+        fi
+
         echo "[PRISM CONFIG][ERROR] Failed to load .env" >&2
         return 1
     fi
 
-    set +a
+    if (( ! previous_allexport )); then
+        set +a
+    fi
 
     # ----------------------------------------------------------
-    # 5. Validate mandatory secrets
+    # 6. Validate mandatory credentials
     # ----------------------------------------------------------
 
     if [[ -z "${INPLAYV1_SRC_PWD:-}" ]]; then
@@ -175,21 +302,49 @@ _prism_load_config() {
     fi
 
     # ----------------------------------------------------------
-    # 6. Verify resolved project directories
+    # 7. Validate essential directory settings
     # ----------------------------------------------------------
 
-    if [[ -z "${BASE_DIR:-}" ||
-          -z "${COMMON_DIR:-}" ||
-          -z "${DIRECT2SILVER_PHASE:-}" ||
-          -z "${GOLD_PHASE:-}" ]]; then
+    local required
 
-        echo "[PRISM CONFIG][ERROR] Required directories missing" >&2
+    for required in \
+        BASE_DIR \
+        COMMON_DIR \
+        SHARED_MODS \
+        CONF_DIR \
+        DIRECT2SILVER_PHASE \
+        GOLD_PHASE \
+        BASE_LOG_DIR \
+        DMP_DIR \
+        EXTRACT_LOG \
+        EXTRACT_LOCK_FILE; do
+
+        if [[ -z "${!required:-}" ]]; then
+            echo "[PRISM CONFIG][ERROR] Missing: $required" >&2
+            return 1
+        fi
+
+    done
+
+    # Verify that config.toml describes this project.
+    local actual_root
+
+    actual_root="$(cd "$config_dir/../.." && pwd -P)" || return 1
+
+    if [[ "$BASE_DIR" != "$actual_root" ]]; then
+        echo "[PRISM CONFIG][ERROR] BASE_DIR does not match project root" >&2
+        echo "[PRISM CONFIG] Configured: $BASE_DIR" >&2
+        echo "[PRISM CONFIG] Actual:     $actual_root" >&2
         return 1
     fi
 
+    # ----------------------------------------------------------
+    # 8. Successful configuration load
+    # ----------------------------------------------------------
+
     echo "[PRISM CONFIG][PASS] Global configuration loaded"
-    echo "[PRISM CONFIG] Base: $BASE_DIR"
-    echo "[PRISM CONFIG] Config: $config_file"
+    echo "[PRISM CONFIG] BASE_DIR: $BASE_DIR"
+    echo "[PRISM CONFIG] CONFIG: $config_file"
 
     return 0
 }
