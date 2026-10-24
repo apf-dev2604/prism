@@ -13,6 +13,30 @@
 # by load_config.sh, not by TOML itself.
 # ============================================================
 
+# ============================================================
+# 0. COMMON ETL SETTINGS
+# ============================================================
+
+[COMMON_ETL_SETTINGS]
+PHT_TIMEZONE = "Asia/Manila"
+SOURCE_TIMEZONE = "UTC"
+
+# Lower OS CPU priority where supported. Higher number means lower priority.
+ENABLE_OS_NICE = true
+OS_NICE_INCREMENT = 10
+
+# Optional safety cap for testing. Use 0 for unlimited/full extract.
+MAX_ROWS_TO_EXTRACT = 0
+
+# Disable COUNT(*) by default to avoid extra load on large tables.
+ENABLE_SOURCE_COUNT = false
+
+# Retention.
+LOCAL_RETENTION_DAYS = 14
+LOG_RETENTION_DAYS = 30
+
+SLEEP_SECONDS_BETWEEN_FETCHES = 0.20
+
 
 # ============================================================
 # 1. ROOT AND COMMON DIRECTORIES
@@ -20,12 +44,10 @@
 
 [COMMON_PATHS]
 
-BASE_DIR = "~/scripts/nexus_etl_prod"
-
+BASE_DIR = "~/scripts/prism"
 COMMON_DIR = "$BASE_DIR/common"
 SHARED_MODS = "$COMMON_DIR/shared_modules"
 CONF_DIR = "$COMMON_DIR/config"
-
 ETL_CONF_FILE = "$CONF_DIR/config.toml"
 ENV_FILE = "$COMMON_DIR/.env"
 
@@ -38,11 +60,8 @@ ENV_FILE = "$COMMON_DIR/.env"
 
 DIRECT2SILVER_PHASE = "$BASE_DIR/d2s"
 GOLD_PHASE = "$BASE_DIR/gold_phase"
-
 BASE_LOG_DIR = "$DIRECT2SILVER_PHASE/logs"
-
 DMP_DIR = "$DIRECT2SILVER_PHASE/daily_dmp/jsonl"
-
 EXTRACT_LOG = "$BASE_LOG_DIR/extract_logs"
 EXTRACT_LOCK_FILE = "$BASE_LOG_DIR/extract_egms_gamestx.lock"
 
@@ -56,7 +75,6 @@ EXTRACT_LOCK_FILE = "$BASE_LOG_DIR/extract_egms_gamestx.lock"
 DW_DB_HOST = "iest-db-postgresql.cvmg4ca8uhd2.ap-southeast-1.rds.amazonaws.com"
 DW_DB_PORT = 5432
 DW_DB_ENGINE = "PostgreSQL"
-
 PIPELINE_USER = "dbade_etl_user"
 
 
@@ -67,7 +85,6 @@ PIPELINE_USER = "dbade_etl_user"
 [DB_SETTINGS.INPLAY1]
 
 DB_ENGINE = "MySQL"
-
 DB_HOST = "103.253.145.33"
 DB_USER = "AllanFaylona"
 DB_PORT = 3306
@@ -87,16 +104,24 @@ ALL_TABLE_LIST = [
     "depositTx"
 ]
 
+SMTP_SUBJECT_PREFIX = "[MySQL-DLAKE][EXTRACT FAIL]"
+BUSINESS_PRI_ID_COLUMN = "TransactionID"
+BUSINESS_DATE_BOUNDARY_COLUMN = "GameDate"
+DEF_BUSINESS_DATE_BOUNDARY_COLUMN = "GameDate"
+FILE_PREFIX = "egms_games_txn"
+
+# Safety controls.
+# FETCH_SIZE controls Python memory usage only. It is NOT a total row limit.
+FETCH_SIZE = 10000
+PROGRESS_LOG_EVERY_ROWS = 100000
 
 # ============================================================
 # 5. DESTINATION - RAW DATA LAKE
 # ============================================================
 
 [DB_SETTINGS.DW_RAW_DB]
-
 DB_PORT = 5432
 DB_NAME = "iestdl"
-
 SCHEMA_NAME = "kemet"
 TABLE_NAME = "GameTransactionInplayV1_dmp"
 
@@ -106,9 +131,7 @@ TABLE_NAME = "GameTransactionInplayV1_dmp"
 # ============================================================
 
 [DB_SETTINGS.STG_RAW_DB]
-
 DB_NAME = "iestdbrds"
-
 SCHEMA_NAME = "etl_stage"
 GAMESTX_TABLENAME = "gametransaction_prod"
 
@@ -118,9 +141,7 @@ GAMESTX_TABLENAME = "gametransaction_prod"
 # ============================================================
 
 [DB_SETTINGS.PRD_RAW_DB]
-
 DB_NAME = "iestdbrds"
-
 SCHEMA_NAME = "public"
 GAMESTX_TABLENAME = "gametransaction_prod"
 
@@ -130,10 +151,8 @@ GAMESTX_TABLENAME = "gametransaction_prod"
 # ============================================================
 
 [DB_SETTINGS.DQ]
-
 DB_NAME = "iestdbrds"
 DB_SCHEMA_NAME = "db_admin"
-
 DQ_TABLE_LIST = [
     "etl_dq_run_summary",
     "etl_source_window_checks",
@@ -161,10 +180,8 @@ DQ_TOTAL_AMOUNT_TOLERANCE = "0.01"
 [SMTP]
 
 MIGRATION_REPORT_TO = "allan.faylona@iest.com.ph"
-
 SMTP_HOST = "smtp.gmail.com"
 SMTP_PORT = 587
-
 SMTP_USER = "dbadmin.824@gmail.com"
 SMTP_FROM = "no-reply-etlnexus@dedbadmin.com"
 
@@ -179,4 +196,20 @@ SMTP_FROM = "no-reply-etlnexus@dedbadmin.com"
 # SMTP_PASSWORD
 #
 # Do not put passwords or authentication tokens here.
+
+# ============================================================
+# 12. SFTP SERVER -  For log and json file
+# ============================================================
+
+# Destination.
+[STORAGE]
+DEFAULT_DEST = "local"  # local or sftp
+
+# SFTP settings. Used only when --dest sftp.
+[STORAGE.SFTP]
+SFTP_HOST = "sftp.example.com"
+SFTP_PORT = 22
+SFTP_USER = "etluser"
+SFTP_PRIVATE_KEY = "/opt/mysql_extract/keys/sftp_id_rsa"
+SFTP_REMOTE_DIR = "/incoming/mysql_extract"
 
