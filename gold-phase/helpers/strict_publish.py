@@ -1,0 +1,127 @@
+# Atomic, fail-closed publish for staged approved batches.
+import argparse
+import os
+from datetime import datetime, timedelta
+from psycopg2 import sql
+from .db import connect
+
+TABLES = {'gameTransaction': ('gametransaction_prod', 'enddatetime', 'externalid'),
+          'walletTransaction': ('wallettransaction_prod', 'createddatetime', 'referenceid')}
+
+
+
+def main():
+    a=argparse.ArgumentParser()
+    a.add_argument('--brand',required=True)
+    a.add_argument('--entity', choices=tuple(TABLES), required=True)
+    a.add_argument('--date-from',required=True)
+    a.add_argument('--date-to',required=True)
+    a.add_argument('--dq-run-id',required=True)
+    args=a.parse_args()
+    d0=datetime.strptime(args.date_from,'%Y-%m-%d'); d1=datetime.strptime(args.date_to,'%Y-%m-%d')
+    if d1<=d0: raise SystemExit('Date-to must be later than date-from')
+    if args.entity == 'gameTransaction':
+        if args.brand == 'inplayv1' and d1.date() > datetime(2026, 5, 26).date():
+            raise RuntimeError('BLOCK: InplayV1 publication ends before 2026-05-26 06:00 UTC-labelled')
+        if args.brand in ('inplay', 'inplayv2') and d0.date() < datetime(2026, 5, 26).date():
+            raise RuntimeError('BLOCK: InplayV2 publication begins 2026-05-26')
+    # Session runs in UTC; source GameDate was tagged as UTC during lake load.
+    lo=d0+timedelta(hours=6); hi=d1+timedelta(hours=6)
+    from .main import load_brand
+    _, brand_config = load_brand(args.brand)
+    if brand_config.BRAND_KEY != args.brand:
+        raise RuntimeError('BLOCK: requested brand and config.BRAND_KEY do not match')
+    strict_brand = 'inplay' if args.brand in ('inplayv1', 'inplayv2') else args.brand
+    offset = getattr(brand_config, 'NEXUS_REPORTING_TIME_OFFSET_HOURS', 0)
+    if offset not in (0, 6):
+        raise RuntimeError('BLOCK: unapproved reporting-time adjustment')
+    stage_lo=lo if args.brand == 'inplay' else lo-timedelta(hours=offset)
+    stage_hi=hi if args.brand == 'inplay' else hi-timedelta(hours=offset)
+    if args.entity != 'gameTransaction' and offset:
+        raise RuntimeError('BLOCK: V2 wallet reporting timestamp policy not approved')
+    table, datecol, key=TABLES[args.entity]
+    if args.brand == 'inplay':
+        if args.entity != 'gameTransaction':
+            raise RuntimeError('InplayV2 DEV wallet targets are not configured')
+        table = 'gametransaction_prod'
+    target=sql.Identifier('public', table)
+    stage=sql.Identifier('etl_stage', table)
+    admin_schema='db_admin' 
+    conn=connect('iestdbrds',env_prefix='TARGET')
+    try:
+        with conn.cursor() as cur:
+            cur.execute('SET LOCAL TIME ZONE %s',('UTC',))
+            cur.execute('SET LOCAL statement_timeout = %s',('0',))
+            cur.execute('SET LOCAL lock_timeout = %s',('15s',))
+            cur.execute('SELECT pg_advisory_xact_lock(hashtext(%s),hashtext(%s))',(args.brand+'_strict_pub',args.entity))
+            cur.execute(f'SELECT state,dq_run_id FROM {admin_schema}.etl_strict_delivery_control WHERE brand=%s AND entity=%s AND window_date_from=%s AND window_date_to=%s FOR UPDATE',(strict_brand,args.entity,d0.date(),d1.date()))
+            control=cur.fetchone()
+            if not control or control != ('PASS',args.dq_run_id):
+                raise RuntimeError('BLOCK: delivery control is not approved with supplied DQ run id')
+            cur.execute(f'SELECT status,trust_result,target_rows,source_rows,missing_in_target,hash_mismatch_rows FROM {admin_schema}.etl_dq_run_summary WHERE run_id=%s AND brand=%s AND entity=%s ORDER BY created_at DESC LIMIT 1',(args.dq_run_id,'inplay',args.entity))
+            dq=cur.fetchone()
+            if not dq or dq[0]!='PASS' or dq[1]!='PASS_PROD_RELEASED' or dq[2]!=dq[3] or dq[4] or dq[5]:
+                raise RuntimeError('BLOCK: exact DQ PASS not found; rounding notes are not allowed')
+            # Protect stage data from changes in this transaction. Only one window may be in staging.
+            cur.execute(sql.SQL('LOCK TABLE {} IN SHARE MODE').format(stage))
+            filt=sql.SQL('{} >= %s AND {} < %s').format(sql.Identifier(datecol),sql.Identifier(datecol))
+            cur.execute(sql.SQL('SELECT count(*) FROM {} WHERE {}').format(stage,filt),(stage_lo,stage_hi)); n=cur.fetchone()[0]
+            cur.execute(sql.SQL('SELECT count(*) FROM {}').format(stage)); entire=cur.fetchone()[0]
+            if n != entire or n != dq[2] or n==0: raise RuntimeError('BLOCK: staging population changed or incomplete after DQ')
+            # Existing partial legacy import is NEVER deleted or silently ignored.
+            if args.entity=='gameTransaction':
+                cur.execute(sql.SQL('''
+                    SELECT EXISTS (
+                        SELECT 1 FROM {} p JOIN {} s
+                          ON p.externalid=s.externalid
+                         AND p.brand=s.brand AND p.fulletl=s.fulletl
+                        WHERE p.brand=%s AND p.fulletl=%s
+                          AND p.enddatetime >= %s AND p.enddatetime < %s
+                          AND s.enddatetime >= %s AND s.enddatetime < %s
+                    )
+                ''').format(target,stage),
+                    (brand_config.BRAND, brand_config.FULL_ETL,
+                     lo, hi, stage_lo, stage_hi))
+            else:
+                cur.execute(sql.SQL('SELECT count(*) FROM {} p JOIN {} s ON p.platform=s.platform AND p.referenceid=s.referenceid').format(target,stage))
+            colliding=cur.fetchone()[0]
+            if colliding: raise RuntimeError('BLOCK: existing NEXUS keys found in the requested business window. Review prior partial import.')
+            # Avoid all runtime-computed/generated identity columns; load regular columns only.
+            cur.execute('''SELECT a.attname FROM pg_attribute a
+                JOIN pg_class t ON t.oid=a.attrelid JOIN pg_namespace n ON n.oid=t.relnamespace
+                WHERE n.nspname=%s AND t.relname=%s AND a.attnum>0
+                  AND NOT a.attisdropped AND a.attgenerated='' AND a.attidentity=''
+                  AND a.attname<>'id' ORDER BY a.attnum''',('public',table))
+            columns=[r[0] for r in cur.fetchall()]
+            if not columns: raise RuntimeError('No safe insert columns found')
+            colsql=sql.SQL(',').join(map(sql.Identifier,columns))
+            # InplayV2 timestamps are normalized by +6h during staging.
+            # Never apply that offset again at shared publication.
+            # Preserve the existing V1-only publish adjustment.
+            expressions=[]
+            for column in columns:
+                if args.brand != 'inplay' and offset and args.entity == 'gameTransaction' and column.lower() in ('startdatetime','enddatetime'):
+                    expressions.append(sql.SQL("({} + interval '6 hours')").format(sql.Identifier(column)))
+                else:
+                    expressions.append(sql.Identifier(column))
+            select_sql=sql.SQL(',').join(expressions)
+            cur.execute(sql.SQL('INSERT INTO {} ({}) SELECT {} FROM {} WHERE {}').format(target,colsql,select_sql,stage,filt),(stage_lo,stage_hi))
+            if cur.rowcount != n: raise RuntimeError('Publication count mismatch; rollback')
+            cur.execute(f'UPDATE {admin_schema}.etl_strict_delivery_control SET state=%s,updated_at=now(),notes=%s WHERE brand=%s AND entity=%s AND window_date_from=%s AND window_date_to=%s',('RELEASED',f'published={n} dq_run_id={args.dq_run_id}', strict_brand,args.entity,d0.date(),d1.date()))
+            cur.execute(sql.SQL('DELETE FROM {} WHERE {}').format(stage, filt),(stage_lo, stage_hi))
+            deleted = cur.rowcount
+            if deleted != n:
+                raise RuntimeError(
+                        'BLOCK: staging cleanup deleted %d rows; expected %d. '
+                        'Rolling back publication and RELEASED state.'
+                        % (deleted, n)
+                )
+        conn.commit()
+        print('[STRICT RELEASED] entity=%s rows=%d dq_run_id=%s'%(args.entity,n,args.dq_run_id),flush=True)
+    except Exception:
+        if not conn.closed: conn.rollback()
+        raise
+    finally:
+        conn.close()
+if __name__=='__main__': main()
+

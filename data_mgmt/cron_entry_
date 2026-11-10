@@ -1,0 +1,3 @@
+# Disabled until approved, including completed restore validation, explicit GRANT EXECUTE on retention function, and required SELECT privileges.
+# 0 3 2 * * /home/allanf/scripts/prism/gold-phase/bkp_drop_partition.sh >> /home/allanf/scripts/prism/gold-phase/logs/partition_retention.log 2>&1
+

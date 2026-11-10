@@ -1,0 +1,11 @@
+-- DO NOT EXECUTE until explicit production approval and successful restore test.
+-- This grant enables destructive partition retirement from the dedicated login.
+-- GRANT EXECUTE ON FUNCTION public.retire_gametx_partition(text) TO dba_partition_maint;
+-- Grant SELECT on all approved attached child tables for pg_dump backup.
+-- Example (must be repeated for each existing partition):
+-- GRANT SELECT ON public.gametransaction_prod_y2024m11 TO dba_partition_maint;
+-- Future child grants may be managed by authorized DBA when created, or:
+-- ALTER DEFAULT PRIVILEGES FOR ROLE nexus_partition_owner IN SCHEMA public
+--     GRANT SELECT ON TABLES TO dba_partition_maint;
+-- WARNING: default grants apply to OTHER tables created by that owner in schema.
+

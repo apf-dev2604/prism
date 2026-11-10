@@ -1,0 +1,2 @@
+#`:CRON_TZ=Asia/Manila
+#0 22 * * * /bin/bash -c 'export TZ=Asia/Manila; cd /home/allanf/scripts/prism/d2s-phase || exit 1; FROM=$(date -d yesterday +\%F); TO=$(date +\%F); exec /bin/bash run_full_etl.sh --from "$FROM" --to "$TO" --jmp-task full' >> /home/allanf/scripts/prism/d2s-phase/cron_full_etl.log 2>&1

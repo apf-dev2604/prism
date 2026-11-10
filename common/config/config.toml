@@ -58,10 +58,13 @@ ENV_FILE = "$COMMON_DIR/.env"
 
 [PIPELINE_DIR]
 
-DIRECT2SILVER_PHASE = "$BASE_DIR/d2s"
-GOLD_PHASE = "$BASE_DIR/gold_phase"
+DIRECT2SILVER_PHASE = "$BASE_DIR/d2s-phase"
+#DIRECT2SILVER_PHASE = "$BASE_DIR/d2s-phase-x-new"
+GOLD_PHASE = "$BASE_DIR/gold-phase"
+#GOLD_PHASE = "$BASE_DIR/gold-phase-x-new"
 BASE_LOG_DIR = "$DIRECT2SILVER_PHASE/logs"
 DMP_DIR = "$DIRECT2SILVER_PHASE/daily_dmp/jsonl"
+TEMP_DRAFTING_DIR = "$BASE_LOG_DIR/tmp_dir"
 EXTRACT_LOG = "$BASE_LOG_DIR/extract_logs"
 EXTRACT_LOCK_FILE = "$BASE_LOG_DIR/extract_egms_gamestx.lock"
 
@@ -70,13 +73,15 @@ EXTRACT_LOCK_FILE = "$BASE_LOG_DIR/extract_egms_gamestx.lock"
 # 3. GLOBAL DATABASE SETTINGS
 # ============================================================
 
-[DB_SETTINGS]
+[DB_SETTINGS.PIPELINE]
 
-DW_DB_HOST = "iest-db-postgresql.cvmg4ca8uhd2.ap-southeast-1.rds.amazonaws.com"
-DW_DB_PORT = 5432
-DW_DB_ENGINE = "PostgreSQL"
+DB_HOST = "iest-db-postgresql.cvmg4ca8uhd2.ap-southeast-1.rds.amazonaws.com"
+DB_PORT = 5432
+DB_ENGINE = "PostgreSQL"
 PIPELINE_USER = "dbade_etl_user"
 
+[DB_SETTINGS.PARTITION]
+MAINT_USER = "dba_partition_maint"
 
 # ============================================================
 # 4. SOURCE DATABASE - INPLAY V1 / MYSQL
@@ -119,18 +124,17 @@ PROGRESS_LOG_EVERY_ROWS = 100000
 # 5. DESTINATION - RAW DATA LAKE
 # ============================================================
 
-[DB_SETTINGS.DW_RAW_DB]
+[DB_SETTINGS.DW_RAW]
 DB_PORT = 5432
 DB_NAME = "iestdl"
 SCHEMA_NAME = "kemet"
-TABLE_NAME = "GameTransactionInplayV1_dmp"
-
-
+DB_TABLENAME = "GameTransactionInplayV1_dmp"
+TEMP_TABLE = "temp_egms_games_txn"
 # ============================================================
 # 6. DESTINATION - NEXUS STAGING
 # ============================================================
 
-[DB_SETTINGS.STG_RAW_DB]
+[DB_SETTINGS.STG_RAW]
 DB_NAME = "iestdbrds"
 SCHEMA_NAME = "etl_stage"
 GAMESTX_TABLENAME = "gametransaction_prod"
@@ -140,7 +144,7 @@ GAMESTX_TABLENAME = "gametransaction_prod"
 # 7. DESTINATION - NEXUS PRODUCTION
 # ============================================================
 
-[DB_SETTINGS.PRD_RAW_DB]
+[DB_SETTINGS.PRD_RAW]
 DB_NAME = "iestdbrds"
 SCHEMA_NAME = "public"
 GAMESTX_TABLENAME = "gametransaction_prod"

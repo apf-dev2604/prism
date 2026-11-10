@@ -1,0 +1,21 @@
+#!/usr/bin/env python3
+"""PRISM shared terminal and log formatting. No ETL decisions or side effects."""
+import logging
+import sys
+
+
+def configure_logging(log_path, level=logging.INFO):
+    logging.basicConfig(
+        level=level,
+        format='%(asctime)s | %(levelname)s | %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S',
+        handlers=[logging.StreamHandler(sys.stdout), logging.FileHandler(log_path)],
+    )
+
+
+def print_summary(title, fields):
+    print('\n' + title)
+    print('=' * len(title))
+    for name, value in fields:
+        print('%-26s: %s' % (name, value))
+

@@ -40,8 +40,6 @@ import hashlib
 import json
 import logging
 # ADDED (SMTP failure alerts): Python standard-library email support.
-import smtplib
-from email.message import EmailMessage
 import os
 import subprocess  # ADDED - secure detached loader handoff
 import stat  # ADDED - validate loader script permissions
@@ -68,103 +66,93 @@ except ImportError:
 # CHANGE VARIABLES HERE
 # =============================================================================
 
-# Remote MariaDB/MySQL connection settings.
-MYSQL_HOST = "103.253.145.33"          # remote MySQL/MariaDB server IP/DNS
-MYSQL_PORT = 3306
-MYSQL_USER = "AllanFaylona"           # use a read-only MySQL/MariaDB user
+# Remote MariaDB/MySQL connection settings (exported by load_config.sh).
+MYSQL_HOST = os.environ["DB_SETTINGS_INPLAY1_DB_HOST"]
+MYSQL_PORT = int(os.environ["DB_SETTINGS_INPLAY1_DB_PORT"])
+MYSQL_USER = os.environ["DB_SETTINGS_INPLAY1_DB_USER"]
 
-DEFAULT_DB = "Artemis"
-DEFAULT_TABLE = "EGMS_Game_Trans"
+DEFAULT_DB = os.environ["DB_SETTINGS_INPLAY1_DB_NAME"]
+DEFAULT_TABLE = os.environ["DB_SETTINGS_INPLAY1_GAMETX_TABLENAME"]
 
 # =============================================================================
-# ADDED - SMTP FAILURE ALERT VARIABLES (no changes to extractor settings)
+# SMTP failure alerts are dispatched through common/shared_modules/etl_alert.py.
+# The shared module reads SMTP settings from the exported config.toml and .env.
 # =============================================================================
-# Set enabled to True after configuring the server and recipient addresses.
-# UPDATED - SMTP variables now read the protected .env exported by cron Bash.
-SMTP_ALERT_ENABLED = True
-SMTP_HOST = os.getenv("SMTP_HOST", "")
-SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
-SMTP_USER = os.getenv("SMTP_USER", "")
-SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
-SMTP_FROM = os.getenv("SMTP_FROM", "")
-SMTP_TO = [x.strip() for x in os.getenv("MIGRATION_REPORT_TO", "").split(",") if x.strip()]
-SMTP_USE_SSL = os.getenv("SMTP_USE_SSL", "false").lower() == "true"
-SMTP_STARTTLS = os.getenv("SMTP_STARTTLS", "true").lower() == "true"
-SMTP_TIMEOUT_SECONDS = int(os.getenv("SMTP_TIMEOUT_SECONDS", "20"))
 
 # UPDATED - Handoff path variables declared AFTER BASE_DIR/LOG_DIR below.
-HANDOFF_STARTUP_SECONDS = 10
+HANDOFF_STARTUP_SECONDS = 10  # leave it
 # ADDED - Standalone extraction switch (same style as SKIP_HISTORY in loader Bash).
 # False: after extraction PASS, start the independent PostgreSQL loader (default).
 # True : extraction only; do not launch the loader. No success email is sent.
-SKIP_LOADER = False
-SMTP_SUBJECT_PREFIX = "[NEXUS][MySQL-DLAKE][EXTRACT FAIL]"
+#SKIP_LOADER = False  # leave it
+SKIP_LOADER = os.environ.get("SKIP_LOADER", "false").lower() == "true"
 
 # PostgreSQL target mapping:
 # target id      = TransactionID
 # target data    = JSON payload created from source columns
 # target game_dt = GameDate
-OUTPUT_ID_COLUMN = "TransactionID"
-GAME_DT_OUTPUT_COLUMN = "GameDate"
-DEFAULT_DATE_COLUMN = "GameDate"
+OUTPUT_ID_COLUMN = os.environ["DB_SETTINGS_INPLAY1_BUSINESS_PRI_ID_COLUMN"]
+GAME_DT_OUTPUT_COLUMN = os.environ["DB_SETTINGS_INPLAY1_BUSINESS_DATE_BOUNDARY_COLUMN"]
+DEFAULT_DATE_COLUMN = os.environ["DB_SETTINGS_INPLAY1_DEF_BUSINESS_DATE_BOUNDARY_COLUMN"]
 
 # File naming.
-FILE_PREFIX = "egms_games_txn"
+FILE_PREFIX = os.environ["DB_SETTINGS_INPLAY1_FILE_PREFIX"]
 
 # Local runtime timestamps still use PHT for log readability only.
-PHT_OFFSET = timezone(timedelta(hours=8))
+from zoneinfo import ZoneInfo
+PHT_OFFSET = ZoneInfo(os.environ["COMMON_ETL_SETTINGS_PHT_TIMEZONE"])
 
-# Source business/filter time is UTC/system time in MariaDB/MySQL.
-SOURCE_TIMEZONE = timezone.utc
+# Source business/filter time remains UTC-assumed (no PHT shift).
+SOURCE_TIMEZONE = ZoneInfo(os.environ["COMMON_ETL_SETTINGS_SOURCE_TIMEZONE"])
 
-# Local directories.
-#BASE_DIR = Path("/home/allanf/scripts/nexus_etl_prod/art_mysql-dlake_psql")
-# Clean, production-safe path initialization
-BASE_DIR = Path("~/scripts/nexus_etl_prod/art_mysql-dlake_psql").expanduser()
-# UPDATED - Always ensure extraction project root exists (mkdir -p behavior).
-BASE_DIR.mkdir(parents=True, exist_ok=True)
+# Local directories from config.toml.
+BASE_DIR = Path(os.environ["DIRECT2SILVER_PHASE"])
+OUTPUT_DIR = Path(os.environ["DMP_DIR"])
+TMP_WORK_DIR = Path(os.environ["TEMP_DRAFTING_DIR"])
+#WORK_DIR = BASE_DIR / "work"  # Existing working directory, required by make_run_dir().
+LOG_DIR = Path(os.environ["BASE_LOG_DIR"])
+LOCK_FILE = Path(os.environ["EXTRACT_LOCK_FILE"])
 
-
-OUTPUT_DIR = BASE_DIR / "daily_dump" / "jsonl"
-WORK_DIR = BASE_DIR / "work"
-LOG_DIR = BASE_DIR / "work" / "app_logs"
-LOCK_FILE = BASE_DIR / "work" / "extract_egms_gamestx.lock"
-
-# UPDATED - Fix initialization order: BASE_DIR and LOG_DIR now exist.
+# Retain original loader handoff and log directory relationships.
 LOADER_BASH = BASE_DIR / "batch_daily_loader.sh"
 HANDOFF_DIR = LOG_DIR / "loader_handoff"
 
 # Destination.
-DEFAULT_DEST = "local"  # local or sftp
+DEFAULT_DEST = os.environ["STORAGE_DEFAULT_DEST"]
 
 # SFTP settings. Used only when --dest sftp.
-SFTP_HOST = "sftp.example.com"
-SFTP_PORT = 22
-SFTP_USER = "etluser"
-SFTP_PRIVATE_KEY = Path("/opt/mysql_extract/keys/sftp_id_rsa")
-SFTP_REMOTE_DIR = "/incoming/mysql_extract"
+SFTP_HOST = os.environ["STORAGE_SFTP_SFTP_HOST"]
+SFTP_PORT = int(os.environ["STORAGE_SFTP_SFTP_PORT"])
+SFTP_USER = os.environ["STORAGE_SFTP_SFTP_USER"]
+SFTP_PRIVATE_KEY = Path(os.environ["STORAGE_SFTP_SFTP_PRIVATE_KEY"]).expanduser()
+SFTP_REMOTE_DIR = os.environ["STORAGE_SFTP_SFTP_REMOTE_DIR"]
 
 # Safety controls.
 # FETCH_SIZE controls Python memory usage only. It is NOT a total row limit.
-FETCH_SIZE = 10000
-SLEEP_SECONDS_BETWEEN_FETCHES = 0.20
-PROGRESS_LOG_EVERY_ROWS = 100000
+FETCH_SIZE = int(os.environ["DB_SETTINGS_INPLAY1_FETCH_SIZE"])
+SLEEP_SECONDS_BETWEEN_FETCHES = float(os.environ["COMMON_ETL_SETTINGS_SLEEP_SECONDS_BETWEEN_FETCHES"])
+PROGRESS_LOG_EVERY_ROWS = int(os.environ["DB_SETTINGS_INPLAY1_PROGRESS_LOG_EVERY_ROWS"])
 
 # Optional safety cap for testing. Use 0 for unlimited/full extract.
-MAX_ROWS_TO_EXTRACT = 0
+MAX_ROWS_TO_EXTRACT = int(os.environ["COMMON_ETL_SETTINGS_MAX_ROWS_TO_EXTRACT"])
 
 # Lower OS CPU priority where supported. Higher number means lower priority.
-ENABLE_OS_NICE = True
-OS_NICE_INCREMENT = 10
+ENABLE_OS_NICE = os.environ["COMMON_ETL_SETTINGS_ENABLE_OS_NICE"].lower() == "true"
+OS_NICE_INCREMENT = int(os.environ["COMMON_ETL_SETTINGS_OS_NICE_INCREMENT"])
 
 # Disable COUNT(*) by default to avoid extra load on large tables.
-ENABLE_SOURCE_COUNT = False
+ENABLE_SOURCE_COUNT = os.environ["COMMON_ETL_SETTINGS_ENABLE_SOURCE_COUNT"].lower() == "true"
 
 # Retention.
-LOCAL_RETENTION_DAYS = 14
-LOG_RETENTION_DAYS = 30
+LOCAL_RETENTION_DAYS = int(os.environ["COMMON_ETL_SETTINGS_LOCAL_RETENTION_DAYS"])
+LOG_RETENTION_DAYS = int(os.environ["COMMON_ETL_SETTINGS_LOG_RETENTION_DAYS"])
 
-APP_NAME = "extract_egms_gamestx_safe"
+#APP_NAME = "extract_egms_gamestx_safe"
+APP_NAME = "egms_games_txn_mysql_extract"
+# Shared formatting and stage-specific SQL (no processing behavior changes).
+sys.path.insert(0, os.environ["SHARED_MODS"])
+from etl_report import configure_logging, print_summary, log_exception
+from query import egms_extractor_queries as extractor_queries
 
 # Source columns to SELECT from MariaDB/MySQL.
 # Idx is intentionally omitted from the extract payload.
@@ -313,15 +301,7 @@ def setup_logging() -> Path:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_file = LOG_DIR / f"{APP_NAME}_{now_pht().strftime('%Y%m%d_%H%M%S')}_PHT.log"
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s | %(levelname)s | %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-        handlers=[
-            logging.FileHandler(log_file),
-            logging.StreamHandler(sys.stdout),
-        ],
-    )
+    configure_logging(log_file)
     return log_file
 
 
@@ -514,19 +494,7 @@ def mysql_connection(cfg: Config):
 
 
 def build_select_sql(cfg: Config) -> str:
-    db = quote_identifier(cfg.db)
-    table = quote_identifier(cfg.table)
-    date_col = quote_identifier(cfg.date_column)
-    selected_columns = ",\n            ".join(quote_identifier(col) for col in SOURCE_SELECT_COLUMNS)
-
-    # Date-window filter only. No LIMIT. No keyset condition.
-    return f"""
-        SELECT
-            {selected_columns}
-        FROM {db}.{table}
-        WHERE {date_col} >= %s
-          AND {date_col} < %s
-    """
+    return extractor_queries.build_select_sql(cfg, SOURCE_SELECT_COLUMNS, quote_identifier)
 
 
 def get_source_count(conn, cfg: Config) -> Optional[int]:
@@ -538,15 +506,7 @@ def get_source_count(conn, cfg: Config) -> Optional[int]:
 
 def get_database_window_count(conn, cfg: Config) -> int:
     """Count source rows for the exact UTC date window used by the extract."""
-    db = quote_identifier(cfg.db)
-    table = quote_identifier(cfg.table)
-    date_col = quote_identifier(cfg.date_column)
-    sql = f"""
-        SELECT COUNT(*) AS cnt
-        FROM {db}.{table}
-        WHERE {date_col} >= %s
-          AND {date_col} < %s
-    """
+    sql = extractor_queries.build_count_sql(cfg, quote_identifier)
     with conn.cursor(pymysql.cursors.DictCursor) as cur:
         cur.execute(sql, (mysql_datetime_utc(cfg.window_from), mysql_datetime_utc(cfg.window_to)))
         row = cur.fetchone()
@@ -560,14 +520,14 @@ def get_database_window_count(conn, cfg: Config) -> int:
 # UPDATED - Monthly output storage. No change to source query or JSONL rows.
 def monthly_output_dir(cfg: Config) -> Path:
     # Business-date month, not the month the extraction happens.
-    return OUTPUT_DIR / file_date_label(cfg.window_from)[:6]
+    return OUTPUT_DIR / file_date_label(cfg.window_from)[:6] / file_date_label(cfg.window_from)
 
 
 def make_run_dir(cfg: Config) -> Path:
-    WORK_DIR.mkdir(parents=True, exist_ok=True)
+    TMP_WORK_DIR.mkdir(parents=True, exist_ok=True)
     # UPDATED - Unique working directory; never remove a previous attempt.
     run_name = f"{FILE_PREFIX}_{file_date_label(cfg.window_from)}_exractdt_{cfg.run_timestamp}"
-    run_dir = WORK_DIR / run_name
+    run_dir = TMP_WORK_DIR / run_name
     run_dir.mkdir(parents=True, exist_ok=False)
     return run_dir
 
@@ -832,13 +792,13 @@ def run_extract(cfg: Config) -> None:
                 extracted_count,
                 output_json_line_count,
             )
-            print("\nEXTRACT SUMMARY")
-            print("===============")
-            print("status                  : FAIL")
-            print(f"database_count          : {database_window_count}")
-            print(f"extracted_count         : {extracted_count}")
-            print(f"output_json_line_count  : {output_json_line_count}")
-            print("reason                  : count mismatch between source database and output JSON file")
+            print_summary("EXTRACT SUMMARY", [
+                ("status", "FAIL"),
+                ("database_count", database_window_count),
+                ("extracted_count", extracted_count),
+                ("output_json_line_count", output_json_line_count),
+                ("reason", "count mismatch between source database and output JSON file"),
+            ])
             raise RuntimeError(
                 f"FAIL: Count mismatch. database_count={database_window_count}, "
                 f"extracted_count={extracted_count}, output_json_line_count={output_json_line_count}"
@@ -876,16 +836,16 @@ def run_extract(cfg: Config) -> None:
         logging.info("Duration        : %.3f minutes (%s)", duration_seconds / 60.0, duration_hhmmss(duration_seconds))
         logging.info("Extraction completed successfully. total_extracted=%s", extracted_count)
 
-        print("\nEXTRACT SUMMARY")
-        print("===============")
-        print("status                  : PASS")
-        print(f"database_count          : {database_window_count}")
-        print(f"extracted_count         : {extracted_count}")
-        print(f"output_json_line_count  : {output_json_line_count}")
-        print(f"output_directory        : {final_dir}")
-        print(f"output_file             : {final_dir / output_path.name}")
-        print(f"duration_minutes        : {duration_seconds / 60.0:.3f}")
-        print(f"duration_hhmmss         : {duration_hhmmss(duration_seconds)}")
+        print_summary("EXTRACT SUMMARY", [
+            ("status", "PASS"),
+            ("database_count", database_window_count),
+            ("extracted_count", extracted_count),
+            ("output_json_line_count", output_json_line_count),
+            ("output_directory", final_dir),
+            ("output_file", final_dir / output_path.name),
+            ("duration_minutes", f"{duration_seconds / 60.0:.3f}"),
+            ("duration_hhmmss", duration_hhmmss(duration_seconds)),
+        ])
 
     finally:
         try:
@@ -937,12 +897,7 @@ def trigger_loader_handoff(cfg: Config) -> None:
         str(status_file), str(started_file),
     ]
     # Secure: argv list, no shell, trusted script path, detached session.
-    env = {
-        "HOME": str(Path.home()),
-        "PATH": "/usr/local/bin:/usr/bin:/bin",
-        "LANG": "C.UTF-8",
-        "DST_PWD": os.environ.get("DST_PWD", ""),
-    }
+    env = os.environ.copy()  # Preserve all exported PRISM config and .env values.
     if not env["DST_PWD"]:
         raise RuntimeError("DST_PWD is missing from the cron-exported .env")
     with log_file.open("ab") as log:
@@ -975,54 +930,34 @@ def trigger_loader_handoff(cfg: Config) -> None:
 
 
 def send_extraction_failure_email(exc: Exception, cfg: Optional[Config]) -> None:
-    """Best-effort alert only; never mask the original extraction failure."""
-    if not SMTP_ALERT_ENABLED:
-        logging.warning("SMTP failure alert disabled (SMTP_ALERT_ENABLED=False).")
-        return
-
+    """Best-effort failure alert through the existing PRISM shared SMTP module."""
     try:
-        if not SMTP_HOST or not SMTP_FROM or not SMTP_TO:
-            raise ValueError("SMTP_HOST, SMTP_FROM, and SMTP_TO must be configured")
-        if SMTP_USE_SSL and SMTP_STARTTLS:
-            raise ValueError("Choose SMTP_USE_SSL or SMTP_STARTTLS, not both")
-        if SMTP_USER and not SMTP_PASSWORD:
-            raise ValueError("SMTP_PASSWORD is missing")
-
-        msg = EmailMessage()
-        msg["From"] = SMTP_FROM
-        msg["To"] = ", ".join(SMTP_TO)
-        msg["Subject"] = f"{SMTP_SUBJECT_PREFIX} {now_pht():%Y-%m-%d %H:%M:%S} PHT"
-        window = (
-            f"{format_utc(cfg.window_from)} through {format_utc(cfg.window_to)} (SQL clock)"
-            if cfg else "Unavailable (failed before arguments were validated)"
-        )
-        database_table = f"{cfg.db}.{cfg.table}" if cfg else f"{DEFAULT_DB}.{DEFAULT_TABLE}"
-        msg.set_content(
-            "EGMS MySQL extraction failed.\n\n"
-            f"Database/Table : {database_table}\n"
-            f"MySQL Host     : {MYSQL_HOST}:{MYSQL_PORT}\n"
-            f"Window         : {window}\n"
-            f"Failure Time   : {format_pht(now_pht())} PHT\n"
-            f"Error Type     : {type(exc).__name__}\n"
-            f"Error Message  : {str(exc)[:1500]}\n\n"
-            "Status         : FAIL\n"
-            "Action         : Check the extractor log; do not start the loader.\n"
-            "NOTE: This alert does not perform retries or backfills.\n"
-        )
-
-        if SMTP_USE_SSL:
-            smtp = smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=SMTP_TIMEOUT_SECONDS)
-        else:
-            smtp = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=SMTP_TIMEOUT_SECONDS)
-        with smtp:
-            smtp.ehlo()
-            if SMTP_STARTTLS:
-                smtp.starttls()
-                smtp.ehlo()
-            if SMTP_USER:
-                smtp.login(SMTP_USER, SMTP_PASSWORD)
-            smtp.send_message(msg)
-        logging.info("SMTP extraction failure alert sent to %s", ", ".join(SMTP_TO))
+        shared_dir = Path(os.environ["SHARED_MODS"])
+        if not (shared_dir / "etl_alert.py").is_file():
+            raise FileNotFoundError(f"Shared SMTP module missing: {shared_dir / 'etl_alert.py'}")
+        sys.path.insert(0, str(shared_dir))
+        try:
+            from etl_alert import send_failure
+            # Reuse this extractor's existing file log as failure evidence.
+            error_log = next(
+                (handler.baseFilename for handler in logging.getLogger().handlers
+                 if isinstance(handler, logging.FileHandler)), ""
+            )
+            window_from = format_utc(cfg.window_from) if cfg else "unknown"
+            window_to = format_utc(cfg.window_to) if cfg else "unknown"
+            sent = send_failure(
+                stage="MySQL-DLAKE-EXTRACT",
+                entity="gameTransaction",
+                window_from=window_from,
+                window_to=window_to,
+                exit_code=1,
+                error_log=error_log,
+            )
+            if not sent:
+                logging.error("Shared SMTP failure notification was not delivered")
+        finally:
+            if sys.path and sys.path[0] == str(shared_dir):
+                sys.path.pop(0)
     except Exception as mail_exc:
         logging.error("SMTP failure notification could not be sent: %s", mail_exc)
 
@@ -1059,7 +994,7 @@ def main() -> int:
         cleanup_old_files(LOG_DIR, LOG_RETENTION_DAYS, "*.log")
         return 0
     except Exception as exc:
-        logging.exception("Extraction failed: %s", exc)
+        log_exception("Extraction failed", exc, LOG_DIR)
         # ADDED - Email only for failures; original exit code and behavior retained.
         send_extraction_failure_email(exc, cfg)
         return 1
@@ -1074,4 +1009,5 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
 

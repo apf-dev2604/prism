@@ -7,8 +7,10 @@ source "$HOME/scripts/prism/common/config/load_config.sh" || exit 1
 # The original manually entered dates remain available for backfills:
 # START_DATE="2024-11-04"
 # END_DATE="2024-11-05"
-WINDOW_FROM=$(date +%F)
-WINDOW_TO=$(date -d "tomorrow" +%F)
+#WINDOW_FROM=$(date +%F)
+#WINDOW_TO=$(date -d "tomorrow" +%F)
+WINDOW_FROM="${1:-$(date +%F)}"
+WINDOW_TO="${2:-$(date -d 'tomorrow' +%F)}"
 
 CURRENT_DATE="$WINDOW_FROM"
 
